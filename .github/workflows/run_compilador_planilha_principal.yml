@@ -26,4 +26,4 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
         run: |
-          python compilador_consulta_servicos_GPM.py
+          python compilador_planilha_principal.py
