@@ -1,5 +1,6 @@
 import csv
 import io
+import sys
 from typing import List
 
 from google.oauth2.service_account import Credentials
