@@ -84,6 +84,17 @@ def remove_fully_blank_rows(values: List[List[Any]]) -> List[List[Any]]:
     return [row for row in values if row_has_any_value(row)]
 
 
+def filter_rows_where_first_column_has_value(values: List[List[Any]]) -> List[List[Any]]:
+    filtered = []
+
+    for row in values:
+        first_cell = row[0] if row else ""
+        if cell_has_value(first_cell):
+            filtered.append(row)
+
+    return filtered
+
+
 def column_number_to_letter(n: int) -> str:
     result = ""
     while n > 0:
@@ -334,6 +345,7 @@ def collect_source_sheets_data(
 
             rows = pad_rows_to_width(rows, expected_width)
             rows = remove_fully_blank_rows(rows)
+            rows = filter_rows_where_first_column_has_value(rows)
 
             print(f" - {len(rows)} linha(s) aproveitada(s)")
             all_rows.extend(rows)
@@ -778,6 +790,7 @@ def main():
     # -------------------------------------------------
     # 2) LÊ PLAN_PRINCIPAL!B5:BX DAS 11 PLANILHAS
     #    E ESCREVE ABAIXO DO BLOCO DOS CSVs, A PARTIR DA COLUNA A
+    #    CONSIDERANDO APENAS LINHAS ONDE A COLUNA B DA ORIGEM TENHA VALOR
     # -------------------------------------------------
     append_start_row = CSV_START_ROW + csv_rows_written
 
