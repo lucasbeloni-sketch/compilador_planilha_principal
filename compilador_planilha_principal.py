@@ -11,6 +11,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
+
 # =========================
 # CONFIGURAÇÕES
 # =========================
@@ -46,6 +47,7 @@ SCOPES = [
 
 LOCAL_CREDENTIALS_FILE = "service_account.json"
 WRITE_CHUNK_SIZE = 3000
+
 
 # =========================
 # CSV - AUMENTA LIMITE
@@ -521,6 +523,20 @@ def get_sheet_id(sheets_service, spreadsheet_id: str, sheet_name: str) -> int:
     raise ValueError(f"Aba '{sheet_name}' não encontrada.")
 
 
+def get_sheet_properties(sheets_service, spreadsheet_id: str, sheet_name: str) -> Dict[str, Any]:
+    metadata = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets.properties(sheetId,title,gridProperties)"
+    ).execute()
+
+    for sheet in metadata.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == sheet_name:
+            return props
+
+    raise ValueError(f"Aba '{sheet_name}' não encontrada.")
+
+
 def apply_percentage_format(
     sheets_service,
     spreadsheet_id: str,
@@ -582,6 +598,51 @@ def clear_target_range(sheets_service, spreadsheet_id: str, sheet_name: str):
     ).execute()
 
 
+def ensure_sheet_has_capacity(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    required_rows: int,
+    required_cols: int
+):
+    props = get_sheet_properties(sheets_service, spreadsheet_id, sheet_name)
+    sheet_id = props["sheetId"]
+    grid = props.get("gridProperties", {})
+
+    current_rows = grid.get("rowCount", 0)
+    current_cols = grid.get("columnCount", 0)
+
+    requests = []
+
+    if required_rows > current_rows:
+        rows_to_add = required_rows - current_rows
+        print(f"Adicionando {rows_to_add} linha(s) na aba {sheet_name}...")
+        requests.append({
+            "appendDimension": {
+                "sheetId": sheet_id,
+                "dimension": "ROWS",
+                "length": rows_to_add
+            }
+        })
+
+    if required_cols > current_cols:
+        cols_to_add = required_cols - current_cols
+        print(f"Adicionando {cols_to_add} coluna(s) na aba {sheet_name}...")
+        requests.append({
+            "appendDimension": {
+                "sheetId": sheet_id,
+                "dimension": "COLUMNS",
+                "length": cols_to_add
+            }
+        })
+
+    if requests:
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests}
+        ).execute()
+
+
 def write_to_sheet_in_chunks(
     sheets_service,
     spreadsheet_id: str,
@@ -600,6 +661,17 @@ def write_to_sheet_in_chunks(
 
     print(f"Total de linhas para gravação: {total_rows}")
     print(f"Total de colunas para gravação: {total_cols}")
+
+    required_end_row = start_row + total_rows - 1
+    required_end_col = start_col + total_cols - 1
+
+    ensure_sheet_has_capacity(
+        sheets_service=sheets_service,
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+        required_rows=required_end_row,
+        required_cols=required_end_col
+    )
 
     current_row = start_row
 
@@ -705,7 +777,7 @@ def main():
 
     # -------------------------------------------------
     # 2) LÊ PLAN_PRINCIPAL!B5:BX DAS 11 PLANILHAS
-    #    E ESCREVE ABAIXO DO BLOCO DOS CSVs
+    #    E ESCREVE ABAIXO DO BLOCO DOS CSVs, A PARTIR DA COLUNA A
     # -------------------------------------------------
     append_start_row = CSV_START_ROW + csv_rows_written
 
