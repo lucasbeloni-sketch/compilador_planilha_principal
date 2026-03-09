@@ -5,6 +5,7 @@ import sys
 import json
 import base64
 import re
+from datetime import datetime, date
 from typing import List, Dict, Any
 
 from google.oauth2.service_account import Credentials
@@ -47,6 +48,7 @@ SCOPES = [
 
 LOCAL_CREDENTIALS_FILE = "service_account.json"
 WRITE_CHUNK_SIZE = 3000
+SHEETS_DATE_EPOCH = date(1899, 12, 30)
 
 
 # =========================
@@ -467,10 +469,57 @@ def normalize_numeric_string(value: Any):
         return original
 
 
+def convert_display_date_to_serial(value: Any):
+    if value is None:
+        return ""
+
+    if not isinstance(value, str):
+        return value
+
+    s = value.strip()
+
+    if s == "":
+        return ""
+
+    if s.startswith("'"):
+        s = s[1:].strip()
+
+    match = re.match(r"^(\d{2}/\d{2}/\d{4})(?:\s*-\s*.*)?$", s)
+    if not match:
+        return value
+
+    try:
+        parsed_date = datetime.strptime(match.group(1), "%d/%m/%Y").date()
+        return (parsed_date - SHEETS_DATE_EPOCH).days
+    except ValueError:
+        return value
+
+
 def convert_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
     converted = []
     for row in values:
         converted.append([normalize_numeric_string(cell) for cell in row])
+    return converted
+
+
+def convert_source_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
+    converted = []
+
+    for row in values:
+        new_row = []
+
+        for idx, cell in enumerate(row):
+            if idx == 0:
+                converted_date = convert_display_date_to_serial(cell)
+                if converted_date != cell:
+                    new_row.append(converted_date)
+                else:
+                    new_row.append(normalize_numeric_string(cell))
+            else:
+                new_row.append(normalize_numeric_string(cell))
+
+        converted.append(new_row)
+
     return converted
 
 
@@ -578,6 +627,49 @@ def apply_percentage_format(
                     "userEnteredFormat": {
                         "numberFormat": {
                             "type": "PERCENT"
+                        }
+                    }
+                },
+                "fields": "userEnteredFormat.numberFormat"
+            }
+        })
+
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests}
+    ).execute()
+
+
+def apply_date_format(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    date_columns: List[int],
+    start_row: int,
+    start_col: int,
+    num_rows: int
+):
+    if not date_columns or num_rows <= 0:
+        return
+
+    sheet_id = get_sheet_id(sheets_service, spreadsheet_id, sheet_name)
+
+    requests = []
+    for col_idx in date_columns:
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row - 1,
+                    "endRowIndex": start_row - 1 + num_rows,
+                    "startColumnIndex": start_col - 1 + col_idx,
+                    "endColumnIndex": start_col - 1 + col_idx + 1
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "numberFormat": {
+                            "type": "DATE",
+                            "pattern": "dd/mm/yyyy"
                         }
                     }
                 },
@@ -814,7 +906,7 @@ def main():
         print(f"Colunas de porcentagem das planilhas de origem: {source_percentage_columns}")
 
         print("Convertendo valores das planilhas de origem...")
-        prepared_source_rows = convert_rows_for_sheets(source_raw_rows)
+        prepared_source_rows = convert_source_rows_for_sheets(source_raw_rows)
 
         print("Removendo linhas totalmente em branco das planilhas de origem...")
         prepared_source_rows = remove_fully_blank_rows(prepared_source_rows)
@@ -833,6 +925,17 @@ def main():
                 start_row=append_start_row,
                 start_col=SOURCE_START_COL_IN_DEST,
                 values=prepared_source_rows
+            )
+
+            print("Aplicando formatação de data na primeira coluna das planilhas de origem...")
+            apply_date_format(
+                sheets_service=sheets_service,
+                spreadsheet_id=DEST_SPREADSHEET_ID,
+                sheet_name=DEST_SHEET_NAME,
+                date_columns=[0],
+                start_row=append_start_row,
+                start_col=SOURCE_START_COL_IN_DEST,
+                num_rows=len(prepared_source_rows)
             )
 
             print("Aplicando formatação de porcentagem nas planilhas de origem...")
