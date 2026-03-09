@@ -6,6 +6,7 @@ import json
 import base64
 import re
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Any
 
 from google.oauth2.service_account import Credentials
@@ -484,9 +485,6 @@ def convert_display_date_to_serial(value: Any):
     if s.startswith("'"):
         s = s[1:].strip()
 
-    # Aceita:
-    # 01/11/2025
-    # 01/11/2025 - sábado
     match = re.match(r"^(\d{2}/\d{2}/\d{4})(?:\s*-\s*.*)?$", s)
     if not match:
         return value
@@ -828,6 +826,17 @@ def write_to_sheet_in_chunks(
         current_row += len(chunk)
 
 
+def write_timestamp_to_c2(sheets_service, spreadsheet_id: str, sheet_name: str):
+    timestamp = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M:%S")
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!C2",
+        valueInputOption="RAW",
+        body={"values": [[timestamp]]}
+    ).execute()
+
+
 # =========================
 # MAIN
 # =========================
@@ -898,7 +907,7 @@ def main():
                         spreadsheet_id=DEST_SPREADSHEET_ID,
                         sheet_name=DEST_SHEET_NAME,
                         date_columns=[0],
-                        start_row=CSV_START_ROW + 1,  # pula cabeçalho
+                        start_row=CSV_START_ROW + 1,
                         start_col=CSV_START_COL,
                         num_rows=csv_rows_written - 1
                     )
@@ -991,6 +1000,13 @@ def main():
             print("Nenhuma linha útil restou nas planilhas de origem após limpeza.")
     else:
         print("Nenhum dado encontrado nas planilhas de origem.")
+
+    print("Gravando timestamp em C2...")
+    write_timestamp_to_c2(
+        sheets_service=sheets_service,
+        spreadsheet_id=DEST_SPREADSHEET_ID,
+        sheet_name=DEST_SHEET_NAME
+    )
 
     print("Processo concluído com sucesso.")
 
