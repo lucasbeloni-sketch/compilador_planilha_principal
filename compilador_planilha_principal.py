@@ -48,6 +48,23 @@ configure_csv_field_limit()
 
 
 # =========================
+# UTILITÁRIOS
+# =========================
+def cell_has_value(cell: Any) -> bool:
+    if cell is None:
+        return False
+    return str(cell).strip() != ""
+
+
+def row_has_any_value(row: List[Any]) -> bool:
+    return any(cell_has_value(cell) for cell in row)
+
+
+def remove_fully_blank_rows(values: List[List[Any]]) -> List[List[Any]]:
+    return [row for row in values if row_has_any_value(row)]
+
+
+# =========================
 # AUTENTICAÇÃO
 # =========================
 def get_credentials() -> Credentials:
@@ -163,7 +180,9 @@ def parse_csv_text(csv_text: str) -> List[List[str]]:
 
     rows = []
     for row in reader:
-        rows.append([str(cell) for cell in row])
+        cleaned_row = [str(cell) for cell in row]
+        if row_has_any_value(cleaned_row):
+            rows.append(cleaned_row)
 
     return rows
 
@@ -538,7 +557,7 @@ def main():
         print("Nenhum dado foi gerado após a mesclagem.")
         return
 
-    print(f"Total final de linhas: {len(merged_data)}")
+    print(f"Total final de linhas antes da limpeza: {len(merged_data)}")
     print(f"Total final de colunas: {max(len(row) for row in merged_data)}")
 
     print("Detectando colunas de porcentagem...")
@@ -550,6 +569,14 @@ def main():
 
     print("Convertendo valores para tipos numéricos quando aplicável...")
     prepared_data = convert_rows_for_sheets(merged_data)
+
+    print("Removendo linhas totalmente em branco...")
+    prepared_data = remove_fully_blank_rows(prepared_data)
+    print(f"Total final de linhas após remover vazias: {len(prepared_data)}")
+
+    if not prepared_data:
+        print("Nenhum dado restante após remover linhas vazias.")
+        return
 
     print("Gravando dados na planilha...")
     write_to_sheet_in_chunks(
@@ -569,7 +596,7 @@ def main():
         percentage_columns=percentage_columns,
         start_row=START_ROW + 1,   # pula o cabeçalho
         start_col=START_COL,
-        num_data_rows=len(prepared_data) - 1
+        num_data_rows=max(len(prepared_data) - 1, 0)
     )
 
     print("Processo concluído com sucesso.")
