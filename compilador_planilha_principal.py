@@ -359,7 +359,7 @@ def collect_source_sheets_data(
 
 
 # =========================
-# CONVERSÃO DE TEXTO -> NÚMERO
+# CONVERSÃO DE TEXTO -> NÚMERO / DATA
 # =========================
 def is_grouped_thousands(value: str, sep: str) -> bool:
     parts = value.split(sep)
@@ -484,6 +484,9 @@ def convert_display_date_to_serial(value: Any):
     if s.startswith("'"):
         s = s[1:].strip()
 
+    # Aceita:
+    # 01/11/2025
+    # 01/11/2025 - sábado
     match = re.match(r"^(\d{2}/\d{2}/\d{4})(?:\s*-\s*.*)?$", s)
     if not match:
         return value
@@ -499,6 +502,30 @@ def convert_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
     converted = []
     for row in values:
         converted.append([normalize_numeric_string(cell) for cell in row])
+    return converted
+
+
+def convert_csv_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
+    converted = []
+
+    for row_idx, row in enumerate(values):
+        new_row = []
+
+        for col_idx, cell in enumerate(row):
+            if row_idx > 0 and col_idx == 0:
+                converted_date = convert_display_date_to_serial(cell)
+                if converted_date != cell:
+                    new_row.append(converted_date)
+                else:
+                    new_row.append(normalize_numeric_string(cell))
+            else:
+                if row_idx == 0:
+                    new_row.append(cell)
+                else:
+                    new_row.append(normalize_numeric_string(cell))
+
+        converted.append(new_row)
+
     return converted
 
 
@@ -845,7 +872,7 @@ def main():
             print(f"Colunas de porcentagem dos CSVs: {csv_percentage_columns}")
 
             print("Convertendo valores dos CSVs...")
-            prepared_csv_data = convert_rows_for_sheets(merged_csv_data)
+            prepared_csv_data = convert_csv_rows_for_sheets(merged_csv_data)
 
             print("Removendo linhas totalmente em branco dos CSVs...")
             prepared_csv_data = remove_fully_blank_rows(prepared_csv_data)
@@ -863,6 +890,18 @@ def main():
                 )
 
                 csv_rows_written = len(prepared_csv_data)
+
+                if csv_rows_written > 1:
+                    print("Aplicando formatação de data na coluna A dos CSVs...")
+                    apply_date_format(
+                        sheets_service=sheets_service,
+                        spreadsheet_id=DEST_SPREADSHEET_ID,
+                        sheet_name=DEST_SHEET_NAME,
+                        date_columns=[0],
+                        start_row=CSV_START_ROW + 1,  # pula cabeçalho
+                        start_col=CSV_START_COL,
+                        num_rows=csv_rows_written - 1
+                    )
 
                 print("Aplicando formatação de porcentagem nos CSVs...")
                 apply_percentage_format(
