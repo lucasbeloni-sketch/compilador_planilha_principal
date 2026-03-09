@@ -15,10 +15,29 @@ from googleapiclient.http import MediaIoBaseDownload
 # CONFIGURAÇÕES
 # =========================
 FOLDER_ID = "1f5Z0f73IZD4rBEssNb9OVtADLVZzttaF"
-SPREADSHEET_ID = "1B_ZAktVrIoY_qGg9vhjMabmNqGMeHODtWPR8nmFp61A"
-SHEET_NAME = "Planejamento"
-START_ROW = 3
-START_COL = 1  # A = 1
+DEST_SPREADSHEET_ID = "1B_ZAktVrIoY_qGg9vhjMabmNqGMeHODtWPR8nmFp61A"
+DEST_SHEET_NAME = "Planejamento"
+
+CSV_START_ROW = 3
+CSV_START_COL = 1  # A
+
+SOURCE_SPREADSHEET_IDS = [
+    "1OTHF2ytEOjGgfE49paARXkz9GjaklOQC_UhiXwUjC2E",
+    "1rj2V7CxbZwkan63eCeLkH9G00Gi041IZNC6vwEgq6yI",
+    "1oS619l3x_D1mXkvDpw8vs91G6ipZmsK83JqEIwPj7Uk",
+    "1FO5tyhXygbbzSmmTGdnm45j4DD_rRFQgEheN8T8Wy70",
+    "1dNwj8qWTl1k92PxI9iXwaNZYITnxuKP-kOF1QnZK3Iw",
+    "1NV0oObhLHAqnSpJKmeBBHQQxcxwlRh14TKQwO561GEw",
+    "1rzT8o6XZi4v8j7CYLky3BD3sT5IPjv1PRb45ipBfbw4",
+    "1sGHf-zWXoxjnO20QBw2KWX39BSCzT8rzHdEz1hL7jyU",
+    "1gN2tR_LCuRnVCQ9tm2UURnVuMlJPVNEjvmo02TwFQCI",
+    "1XmpY8mqkRou-CRY68j1ljHH8W8zcROy7wnwMMSfbV7o",
+    "1bqGmVwMVvWP7KtyE3gDsLyOtV8Zwvo76AY49HJI7QLk",
+]
+
+SOURCE_SHEET_NAME = "Plan_Principal"
+SOURCE_RANGE_A1 = "B5:BX"
+SOURCE_START_COL_IN_DEST = 2  # B
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
@@ -27,7 +46,6 @@ SCOPES = [
 
 LOCAL_CREDENTIALS_FILE = "service_account.json"
 WRITE_CHUNK_SIZE = 3000
-
 
 # =========================
 # CSV - AUMENTA LIMITE
@@ -62,6 +80,43 @@ def row_has_any_value(row: List[Any]) -> bool:
 
 def remove_fully_blank_rows(values: List[List[Any]]) -> List[List[Any]]:
     return [row for row in values if row_has_any_value(row)]
+
+
+def column_number_to_letter(n: int) -> str:
+    result = ""
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def column_letter_to_number(letter: str) -> int:
+    result = 0
+    for char in letter.upper():
+        result = result * 26 + (ord(char) - ord("A") + 1)
+    return result
+
+
+def get_range_width(a1_range: str) -> int:
+    match = re.match(r"([A-Z]+)\d*:([A-Z]+)", a1_range.upper())
+    if not match:
+        raise ValueError(f"Não foi possível calcular a largura do range: {a1_range}")
+
+    start_col = column_letter_to_number(match.group(1))
+    end_col = column_letter_to_number(match.group(2))
+    return end_col - start_col + 1
+
+
+def pad_rows_to_width(values: List[List[Any]], width: int) -> List[List[Any]]:
+    padded = []
+    for row in values:
+        row_list = list(row)
+        if len(row_list) < width:
+            row_list = row_list + [""] * (width - len(row_list))
+        else:
+            row_list = row_list[:width]
+        padded.append(row_list)
+    return padded
 
 
 # =========================
@@ -231,6 +286,63 @@ def merge_csvs(file_contents: List[str]) -> List[List[str]]:
 
 
 # =========================
+# GOOGLE SHEETS - LEITURA
+# =========================
+def get_sheet_range_values(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    range_a1: str
+) -> List[List[Any]]:
+    full_range = f"{sheet_name}!{range_a1}"
+
+    response = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=full_range,
+        valueRenderOption="FORMATTED_VALUE",
+        dateTimeRenderOption="FORMATTED_STRING",
+        majorDimension="ROWS"
+    ).execute()
+
+    return response.get("values", [])
+
+
+def collect_source_sheets_data(
+    sheets_service,
+    spreadsheet_ids: List[str],
+    sheet_name: str,
+    range_a1: str
+) -> List[List[Any]]:
+    all_rows = []
+    expected_width = get_range_width(range_a1)
+
+    for spreadsheet_id in spreadsheet_ids:
+        try:
+            print(f"Lendo {sheet_name}!{range_a1} da planilha {spreadsheet_id}...")
+            rows = get_sheet_range_values(
+                sheets_service=sheets_service,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=sheet_name,
+                range_a1=range_a1
+            )
+
+            if not rows:
+                print(f" - Nenhum dado encontrado em {spreadsheet_id}")
+                continue
+
+            rows = pad_rows_to_width(rows, expected_width)
+            rows = remove_fully_blank_rows(rows)
+
+            print(f" - {len(rows)} linha(s) aproveitada(s)")
+            all_rows.extend(rows)
+
+        except Exception as e:
+            print(f" - Erro ao ler {spreadsheet_id}: {e}")
+
+    return all_rows
+
+
+# =========================
 # CONVERSÃO DE TEXTO -> NÚMERO
 # =========================
 def is_grouped_thousands(value: str, sep: str) -> bool:
@@ -260,20 +372,16 @@ def normalize_numeric_string(value: Any):
     if s == "":
         return ""
 
-    # Remove apóstrofo inicial
     if s.startswith("'"):
         s = s[1:].strip()
 
-    # Detecta porcentagem
     is_percent = False
     if s.endswith("%"):
         is_percent = True
         s = s[:-1].strip()
 
-    # Remove moeda
     s = s.replace("R$", "").replace("$", "").strip()
 
-    # Negativo
     negative = False
     if s.startswith("(") and s.endswith(")"):
         negative = True
@@ -285,29 +393,22 @@ def normalize_numeric_string(value: Any):
 
     s = s.replace(" ", "")
 
-    # Se tiver letras, mantém original
     if not re.fullmatch(r"[\d\.,]+", s):
         return original
 
-    # Evita converter códigos com zero à esquerda,
-    # exceto quando for percentual
     if re.fullmatch(r"\d+", s) and len(s) > 1 and s.startswith("0") and not is_percent:
         return original
 
-    # Tem ponto e vírgula
     if "." in s and "," in s:
         last_dot = s.rfind(".")
         last_comma = s.rfind(",")
 
         if last_comma > last_dot:
-            # BR: 1.234,56
             s = s.replace(".", "")
             s = s.replace(",", ".")
         else:
-            # EN: 1,234.56
             s = s.replace(",", "")
 
-    # Só vírgula
     elif "," in s:
         if is_grouped_thousands(s, ","):
             s = s.replace(",", "")
@@ -321,7 +422,6 @@ def normalize_numeric_string(value: Any):
             else:
                 return original
 
-    # Só ponto
     elif "." in s:
         if is_grouped_thousands(s, "."):
             s = s.replace(".", "")
@@ -353,7 +453,7 @@ def normalize_numeric_string(value: Any):
         return original
 
 
-def convert_rows_for_sheets(values: List[List[str]]) -> List[List[object]]:
+def convert_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
     converted = []
     for row in values:
         converted.append([normalize_numeric_string(cell) for cell in row])
@@ -363,7 +463,7 @@ def convert_rows_for_sheets(values: List[List[str]]) -> List[List[object]]:
 # =========================
 # DETECÇÃO / FORMATAÇÃO DE %
 # =========================
-def is_percentage_text(value) -> bool:
+def is_percentage_text(value: Any) -> bool:
     if not isinstance(value, str):
         return False
 
@@ -374,13 +474,20 @@ def is_percentage_text(value) -> bool:
     return bool(re.fullmatch(r"-?\d+(?:[.,]\d+)?%", s))
 
 
-def detect_percentage_columns(values: List[List[str]]) -> List[int]:
-    if not values or len(values) <= 1:
+def detect_percentage_columns(
+    values: List[List[Any]],
+    skip_first_row: bool = False,
+    threshold: float = 0.6
+) -> List[int]:
+    if not values:
         return []
 
-    max_cols = max(len(row) for row in values)
+    data_rows = values[1:] if skip_first_row and len(values) > 1 else values
+    if not data_rows:
+        return []
+
+    max_cols = max(len(row) for row in data_rows)
     percentage_columns = []
-    data_rows = values[1:]  # ignora cabeçalho
 
     for col_idx in range(max_cols):
         non_empty_count = 0
@@ -394,7 +501,7 @@ def detect_percentage_columns(values: List[List[str]]) -> List[int]:
                 if is_percentage_text(cell):
                     percent_count += 1
 
-        if non_empty_count > 0 and percent_count == non_empty_count:
+        if non_empty_count > 0 and (percent_count / non_empty_count) >= threshold:
             percentage_columns.append(col_idx)
 
     return percentage_columns
@@ -421,9 +528,9 @@ def apply_percentage_format(
     percentage_columns: List[int],
     start_row: int,
     start_col: int,
-    num_data_rows: int
+    num_rows: int
 ):
-    if not percentage_columns or num_data_rows <= 0:
+    if not percentage_columns or num_rows <= 0:
         return
 
     sheet_id = get_sheet_id(sheets_service, spreadsheet_id, sheet_name)
@@ -435,7 +542,7 @@ def apply_percentage_format(
                 "range": {
                     "sheetId": sheet_id,
                     "startRowIndex": start_row - 1,
-                    "endRowIndex": start_row - 1 + num_data_rows,
+                    "endRowIndex": start_row - 1 + num_rows,
                     "startColumnIndex": start_col - 1 + col_idx,
                     "endColumnIndex": start_col - 1 + col_idx + 1
                 },
@@ -450,24 +557,15 @@ def apply_percentage_format(
             }
         })
 
-    if requests:
-        sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests}
-        ).execute()
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests}
+    ).execute()
 
 
 # =========================
-# GOOGLE SHEETS
+# GOOGLE SHEETS - ESCRITA
 # =========================
-def column_number_to_letter(n: int) -> str:
-    result = ""
-    while n > 0:
-        n, remainder = divmod(n - 1, 26)
-        result = chr(65 + remainder) + result
-    return result
-
-
 def build_range(sheet_name: str, start_row: int, start_col: int, num_rows: int, num_cols: int) -> str:
     start_col_letter = column_number_to_letter(start_col)
     end_col_letter = column_number_to_letter(start_col + num_cols - 1)
@@ -490,7 +588,7 @@ def write_to_sheet_in_chunks(
     sheet_name: str,
     start_row: int,
     start_col: int,
-    values: List[List[object]],
+    values: List[List[Any]],
     chunk_size: int = WRITE_CHUNK_SIZE
 ):
     if not values:
@@ -533,71 +631,139 @@ def write_to_sheet_in_chunks(
 def main():
     drive_service, sheets_service = get_services()
 
+    print("Limpando faixa de destino...")
+    clear_target_range(sheets_service, DEST_SPREADSHEET_ID, DEST_SHEET_NAME)
+
+    # -------------------------------------------------
+    # 1) CONSOLIDA CSVs E ESCREVE A PARTIR DE A3
+    # -------------------------------------------------
     print("Listando arquivos CSV na pasta...")
     files = list_csv_files_in_folder(drive_service, FOLDER_ID)
 
-    if not files:
+    csv_rows_written = 0
+
+    if files:
+        print(f"{len(files)} arquivo(s) CSV encontrado(s):")
+        for f in files:
+            print(f" - {f['name']}")
+
+        csv_contents = []
+        for f in files:
+            print(f"Baixando: {f['name']}")
+            content = download_csv_content(drive_service, f["id"])
+            csv_contents.append(content)
+
+        print("Mesclando arquivos CSV...")
+        merged_csv_data = merge_csvs(csv_contents)
+
+        if merged_csv_data:
+            print(f"Total final de linhas dos CSVs antes da limpeza: {len(merged_csv_data)}")
+            print(f"Total final de colunas dos CSVs: {max(len(row) for row in merged_csv_data)}")
+
+            print("Detectando colunas de porcentagem dos CSVs...")
+            csv_percentage_columns = detect_percentage_columns(
+                merged_csv_data,
+                skip_first_row=True,
+                threshold=0.6
+            )
+            print(f"Colunas de porcentagem dos CSVs: {csv_percentage_columns}")
+
+            print("Convertendo valores dos CSVs...")
+            prepared_csv_data = convert_rows_for_sheets(merged_csv_data)
+
+            print("Removendo linhas totalmente em branco dos CSVs...")
+            prepared_csv_data = remove_fully_blank_rows(prepared_csv_data)
+            print(f"Total final de linhas dos CSVs após remover vazias: {len(prepared_csv_data)}")
+
+            if prepared_csv_data:
+                print("Gravando bloco dos CSVs...")
+                write_to_sheet_in_chunks(
+                    sheets_service=sheets_service,
+                    spreadsheet_id=DEST_SPREADSHEET_ID,
+                    sheet_name=DEST_SHEET_NAME,
+                    start_row=CSV_START_ROW,
+                    start_col=CSV_START_COL,
+                    values=prepared_csv_data
+                )
+
+                csv_rows_written = len(prepared_csv_data)
+
+                print("Aplicando formatação de porcentagem nos CSVs...")
+                apply_percentage_format(
+                    sheets_service=sheets_service,
+                    spreadsheet_id=DEST_SPREADSHEET_ID,
+                    sheet_name=DEST_SHEET_NAME,
+                    percentage_columns=csv_percentage_columns,
+                    start_row=CSV_START_ROW,
+                    start_col=CSV_START_COL,
+                    num_rows=csv_rows_written
+                )
+        else:
+            print("Nenhum dado útil encontrado nos CSVs.")
+    else:
         print("Nenhum arquivo CSV encontrado na pasta.")
-        return
 
-    print(f"{len(files)} arquivo(s) CSV encontrado(s):")
-    for f in files:
-        print(f" - {f['name']}")
+    # -------------------------------------------------
+    # 2) LÊ PLAN_PRINCIPAL!B5:BX DAS 11 PLANILHAS
+    #    E ESCREVE ABAIXO DO BLOCO DOS CSVs
+    # -------------------------------------------------
+    append_start_row = CSV_START_ROW + csv_rows_written
 
-    csv_contents = []
-    for f in files:
-        print(f"Baixando: {f['name']}")
-        content = download_csv_content(drive_service, f["id"])
-        csv_contents.append(content)
-
-    print("Mesclando arquivos...")
-    merged_data = merge_csvs(csv_contents)
-
-    if not merged_data:
-        print("Nenhum dado foi gerado após a mesclagem.")
-        return
-
-    print(f"Total final de linhas antes da limpeza: {len(merged_data)}")
-    print(f"Total final de colunas: {max(len(row) for row in merged_data)}")
-
-    print("Detectando colunas de porcentagem...")
-    percentage_columns = detect_percentage_columns(merged_data)
-    print(f"Colunas de porcentagem detectadas: {percentage_columns}")
-
-    print("Limpando faixa de destino...")
-    clear_target_range(sheets_service, SPREADSHEET_ID, SHEET_NAME)
-
-    print("Convertendo valores para tipos numéricos quando aplicável...")
-    prepared_data = convert_rows_for_sheets(merged_data)
-
-    print("Removendo linhas totalmente em branco...")
-    prepared_data = remove_fully_blank_rows(prepared_data)
-    print(f"Total final de linhas após remover vazias: {len(prepared_data)}")
-
-    if not prepared_data:
-        print("Nenhum dado restante após remover linhas vazias.")
-        return
-
-    print("Gravando dados na planilha...")
-    write_to_sheet_in_chunks(
+    print("Coletando dados das planilhas de origem...")
+    source_raw_rows = collect_source_sheets_data(
         sheets_service=sheets_service,
-        spreadsheet_id=SPREADSHEET_ID,
-        sheet_name=SHEET_NAME,
-        start_row=START_ROW,
-        start_col=START_COL,
-        values=prepared_data
+        spreadsheet_ids=SOURCE_SPREADSHEET_IDS,
+        sheet_name=SOURCE_SHEET_NAME,
+        range_a1=SOURCE_RANGE_A1
     )
 
-    print("Aplicando formatação de porcentagem...")
-    apply_percentage_format(
-        sheets_service=sheets_service,
-        spreadsheet_id=SPREADSHEET_ID,
-        sheet_name=SHEET_NAME,
-        percentage_columns=percentage_columns,
-        start_row=START_ROW + 1,   # pula o cabeçalho
-        start_col=START_COL,
-        num_data_rows=max(len(prepared_data) - 1, 0)
-    )
+    if source_raw_rows:
+        print(f"Total de linhas coletadas das planilhas de origem: {len(source_raw_rows)}")
+
+        print("Detectando colunas de porcentagem das planilhas de origem...")
+        source_percentage_columns = detect_percentage_columns(
+            source_raw_rows,
+            skip_first_row=False,
+            threshold=0.6
+        )
+        print(f"Colunas de porcentagem das planilhas de origem: {source_percentage_columns}")
+
+        print("Convertendo valores das planilhas de origem...")
+        prepared_source_rows = convert_rows_for_sheets(source_raw_rows)
+
+        print("Removendo linhas totalmente em branco das planilhas de origem...")
+        prepared_source_rows = remove_fully_blank_rows(prepared_source_rows)
+        print(f"Total final de linhas das planilhas de origem: {len(prepared_source_rows)}")
+
+        if prepared_source_rows:
+            print(
+                f"Gravando bloco das planilhas de origem a partir de "
+                f"{DEST_SHEET_NAME}!{column_number_to_letter(SOURCE_START_COL_IN_DEST)}{append_start_row}..."
+            )
+
+            write_to_sheet_in_chunks(
+                sheets_service=sheets_service,
+                spreadsheet_id=DEST_SPREADSHEET_ID,
+                sheet_name=DEST_SHEET_NAME,
+                start_row=append_start_row,
+                start_col=SOURCE_START_COL_IN_DEST,
+                values=prepared_source_rows
+            )
+
+            print("Aplicando formatação de porcentagem nas planilhas de origem...")
+            apply_percentage_format(
+                sheets_service=sheets_service,
+                spreadsheet_id=DEST_SPREADSHEET_ID,
+                sheet_name=DEST_SHEET_NAME,
+                percentage_columns=source_percentage_columns,
+                start_row=append_start_row,
+                start_col=SOURCE_START_COL_IN_DEST,
+                num_rows=len(prepared_source_rows)
+            )
+        else:
+            print("Nenhuma linha útil restou nas planilhas de origem após limpeza.")
+    else:
+        print("Nenhum dado encontrado nas planilhas de origem.")
 
     print("Processo concluído com sucesso.")
 
