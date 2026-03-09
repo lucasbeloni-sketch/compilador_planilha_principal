@@ -5,7 +5,7 @@ import sys
 import json
 import base64
 import re
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -228,7 +228,7 @@ def is_grouped_thousands(value: str, sep: str) -> bool:
     return all(len(part) == 3 for part in parts[1:])
 
 
-def normalize_numeric_string(value: str):
+def normalize_numeric_string(value: Any):
     if value is None:
         return ""
 
@@ -241,11 +241,20 @@ def normalize_numeric_string(value: str):
     if s == "":
         return ""
 
+    # Remove apóstrofo inicial
     if s.startswith("'"):
         s = s[1:].strip()
 
+    # Detecta porcentagem
+    is_percent = False
+    if s.endswith("%"):
+        is_percent = True
+        s = s[:-1].strip()
+
+    # Remove moeda
     s = s.replace("R$", "").replace("$", "").strip()
 
+    # Negativo
     negative = False
     if s.startswith("(") and s.endswith(")"):
         negative = True
@@ -257,22 +266,29 @@ def normalize_numeric_string(value: str):
 
     s = s.replace(" ", "")
 
+    # Se tiver letras, mantém original
     if not re.fullmatch(r"[\d\.,]+", s):
         return original
 
-    if re.fullmatch(r"\d+", s) and len(s) > 1 and s.startswith("0"):
+    # Evita converter códigos com zero à esquerda,
+    # exceto quando for percentual
+    if re.fullmatch(r"\d+", s) and len(s) > 1 and s.startswith("0") and not is_percent:
         return original
 
+    # Tem ponto e vírgula
     if "." in s and "," in s:
         last_dot = s.rfind(".")
         last_comma = s.rfind(",")
 
         if last_comma > last_dot:
+            # BR: 1.234,56
             s = s.replace(".", "")
             s = s.replace(",", ".")
         else:
+            # EN: 1,234.56
             s = s.replace(",", "")
 
+    # Só vírgula
     elif "," in s:
         if is_grouped_thousands(s, ","):
             s = s.replace(",", "")
@@ -286,6 +302,7 @@ def normalize_numeric_string(value: str):
             else:
                 return original
 
+    # Só ponto
     elif "." in s:
         if is_grouped_thousands(s, "."):
             s = s.replace(".", "")
@@ -308,6 +325,9 @@ def normalize_numeric_string(value: str):
         if negative:
             number = -number
 
+        if is_percent:
+            return float(number) / 100
+
         return number
 
     except ValueError:
@@ -319,6 +339,103 @@ def convert_rows_for_sheets(values: List[List[str]]) -> List[List[object]]:
     for row in values:
         converted.append([normalize_numeric_string(cell) for cell in row])
     return converted
+
+
+# =========================
+# DETECÇÃO / FORMATAÇÃO DE %
+# =========================
+def is_percentage_text(value) -> bool:
+    if not isinstance(value, str):
+        return False
+
+    s = value.strip()
+    if s.startswith("'"):
+        s = s[1:].strip()
+
+    return bool(re.fullmatch(r"-?\d+(?:[.,]\d+)?%", s))
+
+
+def detect_percentage_columns(values: List[List[str]]) -> List[int]:
+    if not values or len(values) <= 1:
+        return []
+
+    max_cols = max(len(row) for row in values)
+    percentage_columns = []
+    data_rows = values[1:]  # ignora cabeçalho
+
+    for col_idx in range(max_cols):
+        non_empty_count = 0
+        percent_count = 0
+
+        for row in data_rows:
+            cell = row[col_idx] if col_idx < len(row) else ""
+
+            if isinstance(cell, str) and cell.strip() != "":
+                non_empty_count += 1
+                if is_percentage_text(cell):
+                    percent_count += 1
+
+        if non_empty_count > 0 and percent_count == non_empty_count:
+            percentage_columns.append(col_idx)
+
+    return percentage_columns
+
+
+def get_sheet_id(sheets_service, spreadsheet_id: str, sheet_name: str) -> int:
+    metadata = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(sheetId,title))"
+    ).execute()
+
+    for sheet in metadata.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == sheet_name:
+            return props.get("sheetId")
+
+    raise ValueError(f"Aba '{sheet_name}' não encontrada.")
+
+
+def apply_percentage_format(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    percentage_columns: List[int],
+    start_row: int,
+    start_col: int,
+    num_data_rows: int
+):
+    if not percentage_columns or num_data_rows <= 0:
+        return
+
+    sheet_id = get_sheet_id(sheets_service, spreadsheet_id, sheet_name)
+
+    requests = []
+    for col_idx in percentage_columns:
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row - 1,
+                    "endRowIndex": start_row - 1 + num_data_rows,
+                    "startColumnIndex": start_col - 1 + col_idx,
+                    "endColumnIndex": start_col - 1 + col_idx + 1
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "numberFormat": {
+                            "type": "PERCENT"
+                        }
+                    }
+                },
+                "fields": "userEnteredFormat.numberFormat"
+            }
+        })
+
+    if requests:
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests}
+        ).execute()
 
 
 # =========================
@@ -424,6 +541,10 @@ def main():
     print(f"Total final de linhas: {len(merged_data)}")
     print(f"Total final de colunas: {max(len(row) for row in merged_data)}")
 
+    print("Detectando colunas de porcentagem...")
+    percentage_columns = detect_percentage_columns(merged_data)
+    print(f"Colunas de porcentagem detectadas: {percentage_columns}")
+
     print("Limpando faixa de destino...")
     clear_target_range(sheets_service, SPREADSHEET_ID, SHEET_NAME)
 
@@ -438,6 +559,17 @@ def main():
         start_row=START_ROW,
         start_col=START_COL,
         values=prepared_data
+    )
+
+    print("Aplicando formatação de porcentagem...")
+    apply_percentage_format(
+        sheets_service=sheets_service,
+        spreadsheet_id=SPREADSHEET_ID,
+        sheet_name=SHEET_NAME,
+        percentage_columns=percentage_columns,
+        start_row=START_ROW + 1,   # pula o cabeçalho
+        start_col=START_COL,
+        num_data_rows=len(prepared_data) - 1
     )
 
     print("Processo concluído com sucesso.")
