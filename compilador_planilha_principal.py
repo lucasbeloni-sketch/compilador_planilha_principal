@@ -18,7 +18,7 @@ from googleapiclient.http import MediaIoBaseDownload
 # CONFIGURAÇÕES
 # =========================
 FOLDER_ID = "1f5Z0f73IZD4rBEssNb9OVtADLVZzttaF"
-DEST_SPREADSHEET_ID = "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs"
+DEST_SPREADSHEET_ID = "1B_ZAktVrIoY_qGg9vhjMabmNqGMeHODtWPR8nmFp61A"
 DEST_SHEET_NAME = "Planejamento"
 
 CSV_START_ROW = 3
@@ -41,6 +41,9 @@ SOURCE_SPREADSHEET_IDS = [
 SOURCE_SHEET_NAME = "Plan_Principal"
 SOURCE_RANGE_A1 = "B5:BX"
 SOURCE_START_COL_IN_DEST = 1  # A
+
+# Colunas da origem que devem virar data real
+SOURCE_DATE_COLUMNS_LETTERS = ["B", "BR", "BS", "BT"]
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
@@ -113,6 +116,13 @@ def column_letter_to_number(letter: str) -> int:
     return result
 
 
+def get_range_start_column_letter(a1_range: str) -> str:
+    match = re.match(r"([A-Z]+)\d*:([A-Z]+)", a1_range.upper())
+    if not match:
+        raise ValueError(f"Não foi possível identificar a coluna inicial do range: {a1_range}")
+    return match.group(1)
+
+
 def get_range_width(a1_range: str) -> int:
     match = re.match(r"([A-Z]+)\d*:([A-Z]+)", a1_range.upper())
     if not match:
@@ -121,6 +131,28 @@ def get_range_width(a1_range: str) -> int:
     start_col = column_letter_to_number(match.group(1))
     end_col = column_letter_to_number(match.group(2))
     return end_col - start_col + 1
+
+
+def get_relative_column_indexes_for_range(
+    column_letters: List[str],
+    a1_range: str
+) -> List[int]:
+    start_col_letter = get_range_start_column_letter(a1_range)
+    start_col_number = column_letter_to_number(start_col_letter)
+
+    indexes = []
+    for col_letter in column_letters:
+        absolute_col_number = column_letter_to_number(col_letter)
+        relative_idx = absolute_col_number - start_col_number
+
+        if relative_idx < 0:
+            raise ValueError(
+                f"A coluna {col_letter} está antes do início do range {a1_range}."
+            )
+
+        indexes.append(relative_idx)
+
+    return indexes
 
 
 def pad_rows_to_width(values: List[List[Any]], width: int) -> List[List[Any]]:
@@ -527,14 +559,18 @@ def convert_csv_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
     return converted
 
 
-def convert_source_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
+def convert_source_rows_for_sheets(
+    values: List[List[Any]],
+    date_column_indexes: List[int]
+) -> List[List[Any]]:
+    date_column_indexes_set = set(date_column_indexes)
     converted = []
 
     for row in values:
         new_row = []
 
         for idx, cell in enumerate(row):
-            if idx == 0:
+            if idx in date_column_indexes_set:
                 converted_date = convert_display_date_to_serial(cell)
                 if converted_date != cell:
                     new_row.append(converted_date)
@@ -945,6 +981,12 @@ def main():
     if source_raw_rows:
         print(f"Total de linhas coletadas das planilhas de origem: {len(source_raw_rows)}")
 
+        source_date_column_indexes = get_relative_column_indexes_for_range(
+            SOURCE_DATE_COLUMNS_LETTERS,
+            SOURCE_RANGE_A1
+        )
+        print(f"Colunas de data das planilhas de origem: {source_date_column_indexes}")
+
         print("Detectando colunas de porcentagem das planilhas de origem...")
         source_percentage_columns = detect_percentage_columns(
             source_raw_rows,
@@ -954,7 +996,10 @@ def main():
         print(f"Colunas de porcentagem das planilhas de origem: {source_percentage_columns}")
 
         print("Convertendo valores das planilhas de origem...")
-        prepared_source_rows = convert_source_rows_for_sheets(source_raw_rows)
+        prepared_source_rows = convert_source_rows_for_sheets(
+            source_raw_rows,
+            date_column_indexes=source_date_column_indexes
+        )
 
         print("Removendo linhas totalmente em branco das planilhas de origem...")
         prepared_source_rows = remove_fully_blank_rows(prepared_source_rows)
@@ -975,12 +1020,12 @@ def main():
                 values=prepared_source_rows
             )
 
-            print("Aplicando formatação de data na primeira coluna das planilhas de origem...")
+            print("Aplicando formatação de data nas colunas das planilhas de origem...")
             apply_date_format(
                 sheets_service=sheets_service,
                 spreadsheet_id=DEST_SPREADSHEET_ID,
                 sheet_name=DEST_SHEET_NAME,
-                date_columns=[0],
+                date_columns=source_date_column_indexes,
                 start_row=append_start_row,
                 start_col=SOURCE_START_COL_IN_DEST,
                 num_rows=len(prepared_source_rows)
