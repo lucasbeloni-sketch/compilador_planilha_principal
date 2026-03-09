@@ -4,6 +4,7 @@ import csv
 import sys
 import json
 import base64
+import re
 from typing import List, Dict
 
 from google.oauth2.service_account import Credentials
@@ -25,7 +26,7 @@ SCOPES = [
 ]
 
 LOCAL_CREDENTIALS_FILE = "service_account.json"
-WRITE_CHUNK_SIZE = 3000  # quantidade de linhas por envio ao Sheets
+WRITE_CHUNK_SIZE = 3000
 
 
 # =========================
@@ -129,7 +130,6 @@ def download_csv_content(drive_service, file_id: str) -> str:
 
     raw_content = buffer.getvalue()
 
-    # tenta decodificações comuns
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
             return raw_content.decode(encoding)
@@ -177,7 +177,7 @@ def merge_csvs(file_contents: List[str]) -> List[List[str]]:
     first_header = None
     first_header_normalized = None
 
-    for index, content in enumerate(file_contents):
+    for content in file_contents:
         rows = parse_csv_text(content)
 
         if not rows:
@@ -197,7 +197,6 @@ def merge_csvs(file_contents: List[str]) -> List[List[str]]:
         if header_normalized == first_header_normalized:
             merged_rows.extend(data_rows)
         else:
-            # Se o cabeçalho vier diferente, mantém tudo para não perder informação
             merged_rows.extend(rows)
 
     if not merged_rows:
@@ -210,6 +209,116 @@ def merge_csvs(file_contents: List[str]) -> List[List[str]]:
     ]
 
     return normalized_rows
+
+
+# =========================
+# CONVERSÃO DE TEXTO -> NÚMERO
+# =========================
+def is_grouped_thousands(value: str, sep: str) -> bool:
+    parts = value.split(sep)
+    if len(parts) <= 1:
+        return False
+
+    if not all(part.isdigit() for part in parts):
+        return False
+
+    if not (1 <= len(parts[0]) <= 3):
+        return False
+
+    return all(len(part) == 3 for part in parts[1:])
+
+
+def normalize_numeric_string(value: str):
+    if value is None:
+        return ""
+
+    if not isinstance(value, str):
+        return value
+
+    original = value
+    s = value.strip().replace("\u00A0", " ")
+
+    if s == "":
+        return ""
+
+    if s.startswith("'"):
+        s = s[1:].strip()
+
+    s = s.replace("R$", "").replace("$", "").strip()
+
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        negative = True
+        s = s[1:-1].strip()
+
+    if s.startswith("-"):
+        negative = True
+        s = s[1:].strip()
+
+    s = s.replace(" ", "")
+
+    if not re.fullmatch(r"[\d\.,]+", s):
+        return original
+
+    if re.fullmatch(r"\d+", s) and len(s) > 1 and s.startswith("0"):
+        return original
+
+    if "." in s and "," in s:
+        last_dot = s.rfind(".")
+        last_comma = s.rfind(",")
+
+        if last_comma > last_dot:
+            s = s.replace(".", "")
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+
+    elif "," in s:
+        if is_grouped_thousands(s, ","):
+            s = s.replace(",", "")
+        else:
+            if s.count(",") == 1:
+                left, right = s.split(",")
+                if right.isdigit() and 1 <= len(right) <= 6:
+                    s = left + "." + right
+                else:
+                    return original
+            else:
+                return original
+
+    elif "." in s:
+        if is_grouped_thousands(s, "."):
+            s = s.replace(".", "")
+        else:
+            if s.count(".") == 1:
+                left, right = s.split(".")
+                if right.isdigit() and 1 <= len(right) <= 6:
+                    s = left + "." + right
+                else:
+                    return original
+            else:
+                return original
+
+    try:
+        if "." in s:
+            number = float(s)
+        else:
+            number = int(s)
+
+        if negative:
+            number = -number
+
+        return number
+
+    except ValueError:
+        return original
+
+
+def convert_rows_for_sheets(values: List[List[str]]) -> List[List[object]]:
+    converted = []
+    for row in values:
+        converted.append([normalize_numeric_string(cell) for cell in row])
+    return converted
 
 
 # =========================
@@ -245,7 +354,7 @@ def write_to_sheet_in_chunks(
     sheet_name: str,
     start_row: int,
     start_col: int,
-    values: List[List[str]],
+    values: List[List[object]],
     chunk_size: int = WRITE_CHUNK_SIZE
 ):
     if not values:
@@ -318,6 +427,9 @@ def main():
     print("Limpando faixa de destino...")
     clear_target_range(sheets_service, SPREADSHEET_ID, SHEET_NAME)
 
+    print("Convertendo valores para tipos numéricos quando aplicável...")
+    prepared_data = convert_rows_for_sheets(merged_data)
+
     print("Gravando dados na planilha...")
     write_to_sheet_in_chunks(
         sheets_service=sheets_service,
@@ -325,7 +437,7 @@ def main():
         sheet_name=SHEET_NAME,
         start_row=START_ROW,
         start_col=START_COL,
-        values=merged_data
+        values=prepared_data
     )
 
     print("Processo concluído com sucesso.")
