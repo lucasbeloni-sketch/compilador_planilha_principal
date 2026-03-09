@@ -37,7 +37,7 @@ SOURCE_SPREADSHEET_IDS = [
 
 SOURCE_SHEET_NAME = "Plan_Principal"
 SOURCE_RANGE_A1 = "B5:BX"
-SOURCE_START_COL_IN_DEST = 2  # B
+SOURCE_START_COL_IN_DEST = 1  # A
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
