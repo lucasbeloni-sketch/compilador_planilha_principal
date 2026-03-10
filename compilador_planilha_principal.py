@@ -5,6 +5,8 @@ import sys
 import json
 import base64
 import re
+import time
+import socket
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any
@@ -12,13 +14,14 @@ from typing import List, Dict, Any
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.errors import HttpError
 
 
 # =========================
 # CONFIGURAÇÕES
 # =========================
 FOLDER_ID = "1f5Z0f73IZD4rBEssNb9OVtADLVZzttaF"
-DEST_SPREADSHEET_ID = "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs"
+DEST_SPREADSHEET_ID = "1B_ZAktVrIoY_qGg9vhjMabmNqGMeHODtWPR8nmFp61A"
 DEST_SHEET_NAME = "Planejamento"
 
 CSV_START_ROW = 3
@@ -52,7 +55,54 @@ SCOPES = [
 
 LOCAL_CREDENTIALS_FILE = "service_account.json"
 WRITE_CHUNK_SIZE = 3000
+FORMAT_CHUNK_ROWS = 5000
+API_TIMEOUT_SECONDS = 300
+API_MAX_RETRIES = 5
+
 SHEETS_DATE_EPOCH = date(1899, 12, 30)
+
+# Define timeout global antes de criar os serviços Google
+socket.setdefaulttimeout(API_TIMEOUT_SECONDS)
+
+
+# =========================
+# EXECUÇÃO COM RETRY
+# =========================
+def execute_with_retries(request, description: str = "requisição"):
+    last_error = None
+
+    for attempt in range(API_MAX_RETRIES):
+        try:
+            return request.execute(num_retries=2)
+        except HttpError as e:
+            last_error = e
+            status = getattr(e.resp, "status", None)
+            retryable = status in {429, 500, 502, 503, 504}
+
+            if not retryable or attempt == API_MAX_RETRIES - 1:
+                raise
+
+            wait_seconds = 2 ** attempt
+            print(
+                f"Falha HTTP em {description} (status={status}). "
+                f"Tentando novamente em {wait_seconds}s..."
+            )
+            time.sleep(wait_seconds)
+
+        except (TimeoutError, socket.timeout, OSError) as e:
+            last_error = e
+
+            if attempt == API_MAX_RETRIES - 1:
+                raise
+
+            wait_seconds = 2 ** attempt
+            print(
+                f"Timeout/erro de rede em {description}. "
+                f"Tentando novamente em {wait_seconds}s..."
+            )
+            time.sleep(wait_seconds)
+
+    raise last_error
 
 
 # =========================
@@ -167,6 +217,11 @@ def pad_rows_to_width(values: List[List[Any]], width: int) -> List[List[Any]]:
     return padded
 
 
+def iter_row_chunks(start_row: int, num_rows: int, chunk_size: int):
+    for offset in range(0, num_rows, chunk_size):
+        yield start_row + offset, min(chunk_size, num_rows - offset)
+
+
 # =========================
 # AUTENTICAÇÃO
 # =========================
@@ -217,14 +272,17 @@ def list_csv_files_in_folder(drive_service, folder_id: str) -> List[Dict[str, st
     )
 
     while True:
-        response = drive_service.files().list(
-            q=query,
-            fields="nextPageToken, files(id, name, mimeType)",
-            pageToken=page_token,
-            pageSize=1000,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
+        response = execute_with_retries(
+            drive_service.files().list(
+                q=query,
+                fields="nextPageToken, files(id, name, mimeType)",
+                pageToken=page_token,
+                pageSize=1000,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ),
+            description="listagem de CSVs no Drive"
+        )
 
         batch_files = response.get("files", [])
         for file in batch_files:
@@ -246,7 +304,10 @@ def download_csv_content(drive_service, file_id: str) -> str:
 
     done = False
     while not done:
-        _, done = downloader.next_chunk()
+        try:
+            _, done = downloader.next_chunk(num_retries=2)
+        except (HttpError, TimeoutError, socket.timeout, OSError):
+            raise
 
     raw_content = buffer.getvalue()
 
@@ -344,13 +405,16 @@ def get_sheet_range_values(
 ) -> List[List[Any]]:
     full_range = f"{sheet_name}!{range_a1}"
 
-    response = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=full_range,
-        valueRenderOption="FORMATTED_VALUE",
-        dateTimeRenderOption="FORMATTED_STRING",
-        majorDimension="ROWS"
-    ).execute()
+    response = execute_with_retries(
+        sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=full_range,
+            valueRenderOption="FORMATTED_VALUE",
+            dateTimeRenderOption="FORMATTED_STRING",
+            majorDimension="ROWS"
+        ),
+        description=f"leitura de {full_range}"
+    )
 
     return response.get("values", [])
 
@@ -528,13 +592,6 @@ def convert_display_date_to_serial(value: Any):
         return value
 
 
-def convert_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
-    converted = []
-    for row in values:
-        converted.append([normalize_numeric_string(cell) for cell in row])
-    return converted
-
-
 def convert_csv_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
     converted = []
 
@@ -632,10 +689,13 @@ def detect_percentage_columns(
 
 
 def get_sheet_id(sheets_service, spreadsheet_id: str, sheet_name: str) -> int:
-    metadata = sheets_service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets(properties(sheetId,title))"
-    ).execute()
+    metadata = execute_with_retries(
+        sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title))"
+        ),
+        description=f"obtenção do sheetId de {sheet_name}"
+    )
 
     for sheet in metadata.get("sheets", []):
         props = sheet.get("properties", {})
@@ -646,10 +706,13 @@ def get_sheet_id(sheets_service, spreadsheet_id: str, sheet_name: str) -> int:
 
 
 def get_sheet_properties(sheets_service, spreadsheet_id: str, sheet_name: str) -> Dict[str, Any]:
-    metadata = sheets_service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets.properties(sheetId,title,gridProperties)"
-    ).execute()
+    metadata = execute_with_retries(
+        sheets_service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties(sheetId,title,gridProperties)"
+        ),
+        description=f"obtenção das propriedades da aba {sheet_name}"
+    )
 
     for sheet in metadata.get("sheets", []):
         props = sheet.get("properties", {})
@@ -673,32 +736,40 @@ def apply_percentage_format(
 
     sheet_id = get_sheet_id(sheets_service, spreadsheet_id, sheet_name)
 
-    requests = []
-    for col_idx in percentage_columns:
-        requests.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row - 1,
-                    "endRowIndex": start_row - 1 + num_rows,
-                    "startColumnIndex": start_col - 1 + col_idx,
-                    "endColumnIndex": start_col - 1 + col_idx + 1
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "numberFormat": {
-                            "type": "PERCENT"
-                        }
-                    }
-                },
-                "fields": "userEnteredFormat.numberFormat"
-            }
-        })
+    for chunk_start_row, chunk_num_rows in iter_row_chunks(start_row, num_rows, FORMAT_CHUNK_ROWS):
+        requests = []
 
-    sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": requests}
-    ).execute()
+        for col_idx in percentage_columns:
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": chunk_start_row - 1,
+                        "endRowIndex": chunk_start_row - 1 + chunk_num_rows,
+                        "startColumnIndex": start_col - 1 + col_idx,
+                        "endColumnIndex": start_col - 1 + col_idx + 1
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "numberFormat": {
+                                "type": "PERCENT"
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            })
+
+        execute_with_retries(
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests}
+            ),
+            description=(
+                f"formatação percentual em {sheet_name} "
+                f"(linhas {chunk_start_row}-{chunk_start_row + chunk_num_rows - 1})"
+            )
+        )
 
 
 def apply_date_format(
@@ -715,33 +786,41 @@ def apply_date_format(
 
     sheet_id = get_sheet_id(sheets_service, spreadsheet_id, sheet_name)
 
-    requests = []
-    for col_idx in date_columns:
-        requests.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": start_row - 1,
-                    "endRowIndex": start_row - 1 + num_rows,
-                    "startColumnIndex": start_col - 1 + col_idx,
-                    "endColumnIndex": start_col - 1 + col_idx + 1
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "numberFormat": {
-                            "type": "DATE",
-                            "pattern": "dd/mm/yyyy"
-                        }
-                    }
-                },
-                "fields": "userEnteredFormat.numberFormat"
-            }
-        })
+    for chunk_start_row, chunk_num_rows in iter_row_chunks(start_row, num_rows, FORMAT_CHUNK_ROWS):
+        requests = []
 
-    sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": requests}
-    ).execute()
+        for col_idx in date_columns:
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": chunk_start_row - 1,
+                        "endRowIndex": chunk_start_row - 1 + chunk_num_rows,
+                        "startColumnIndex": start_col - 1 + col_idx,
+                        "endColumnIndex": start_col - 1 + col_idx + 1
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "numberFormat": {
+                                "type": "DATE",
+                                "pattern": "dd/mm/yyyy"
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            })
+
+        execute_with_retries(
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests}
+            ),
+            description=(
+                f"formatação de data em {sheet_name} "
+                f"(linhas {chunk_start_row}-{chunk_start_row + chunk_num_rows - 1})"
+            )
+        )
 
 
 # =========================
@@ -756,11 +835,14 @@ def build_range(sheet_name: str, start_row: int, start_col: int, num_rows: int, 
 
 def clear_target_range(sheets_service, spreadsheet_id: str, sheet_name: str):
     clear_range = f"{sheet_name}!A3:ZZZ"
-    sheets_service.spreadsheets().values().clear(
-        spreadsheetId=spreadsheet_id,
-        range=clear_range,
-        body={}
-    ).execute()
+    execute_with_retries(
+        sheets_service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=clear_range,
+            body={}
+        ),
+        description=f"limpeza da faixa {clear_range}"
+    )
 
 
 def ensure_sheet_has_capacity(
@@ -802,10 +884,13 @@ def ensure_sheet_has_capacity(
         })
 
     if requests:
-        sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests}
-        ).execute()
+        execute_with_retries(
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests}
+            ),
+            description=f"expansão da grade da aba {sheet_name}"
+        )
 
 
 def write_to_sheet_in_chunks(
@@ -852,12 +937,15 @@ def write_to_sheet_in_chunks(
 
         print(f"Gravando linhas {i + 1} até {i + len(chunk)} em {target_range}...")
 
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=target_range,
-            valueInputOption="RAW",
-            body={"values": chunk}
-        ).execute()
+        execute_with_retries(
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=target_range,
+                valueInputOption="RAW",
+                body={"values": chunk}
+            ),
+            description=f"gravação em {target_range}"
+        )
 
         current_row += len(chunk)
 
@@ -865,12 +953,15 @@ def write_to_sheet_in_chunks(
 def write_timestamp_to_c2(sheets_service, spreadsheet_id: str, sheet_name: str):
     timestamp = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M:%S")
 
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!C2",
-        valueInputOption="RAW",
-        body={"values": [[timestamp]]}
-    ).execute()
+    execute_with_retries(
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{sheet_name}!C2",
+            valueInputOption="RAW",
+            body={"values": [[timestamp]]}
+        ),
+        description=f"gravação do timestamp em {sheet_name}!C2"
+    )
 
 
 # =========================
@@ -943,7 +1034,7 @@ def main():
                         spreadsheet_id=DEST_SPREADSHEET_ID,
                         sheet_name=DEST_SHEET_NAME,
                         date_columns=[0],
-                        start_row=CSV_START_ROW + 1,
+                        start_row=CSV_START_ROW + 1,  # pula cabeçalho
                         start_col=CSV_START_COL,
                         num_rows=csv_rows_written - 1
                     )
