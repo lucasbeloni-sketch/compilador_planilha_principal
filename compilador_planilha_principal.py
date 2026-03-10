@@ -21,7 +21,7 @@ from googleapiclient.errors import HttpError
 # CONFIGURAÇÕES
 # =========================
 FOLDER_ID = "1f5Z0f73IZD4rBEssNb9OVtADLVZzttaF"
-DEST_SPREADSHEET_ID = "1B_ZAktVrIoY_qGg9vhjMabmNqGMeHODtWPR8nmFp61A"
+DEST_SPREADSHEET_ID = "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs"
 DEST_SHEET_NAME = "Planejamento"
 
 CSV_START_ROW = 3
