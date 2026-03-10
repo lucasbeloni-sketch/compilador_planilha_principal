@@ -48,6 +48,9 @@ SOURCE_START_COL_IN_DEST = 1  # A
 # Colunas da origem que devem virar data real
 SOURCE_DATE_COLUMNS_LETTERS = ["B", "BR", "BS", "BT"]
 
+# Colunas da origem que devem virar boolean real
+SOURCE_BOOLEAN_COLUMNS_LETTERS = ["Q"]
+
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -456,7 +459,7 @@ def collect_source_sheets_data(
 
 
 # =========================
-# CONVERSÃO DE TEXTO -> NÚMERO / DATA
+# CONVERSÃO DE TEXTO -> NÚMERO / DATA / BOOLEAN
 # =========================
 def is_grouped_thousands(value: str, sep: str) -> bool:
     parts = value.split(sep)
@@ -592,6 +595,35 @@ def convert_display_date_to_serial(value: Any):
         return value
 
 
+def convert_display_boolean(value: Any):
+    if value is None:
+        return ""
+
+    if isinstance(value, bool):
+        return value
+
+    if not isinstance(value, str):
+        return value
+
+    s = value.strip()
+
+    if s == "":
+        return ""
+
+    if s.startswith("'"):
+        s = s[1:].strip()
+
+    upper_s = s.upper()
+
+    if upper_s == "TRUE":
+        return True
+
+    if upper_s == "FALSE":
+        return False
+
+    return value
+
+
 def convert_csv_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
     converted = []
 
@@ -618,9 +650,11 @@ def convert_csv_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
 
 def convert_source_rows_for_sheets(
     values: List[List[Any]],
-    date_column_indexes: List[int]
+    date_column_indexes: List[int],
+    boolean_column_indexes: List[int]
 ) -> List[List[Any]]:
     date_column_indexes_set = set(date_column_indexes)
+    boolean_column_indexes_set = set(boolean_column_indexes)
     converted = []
 
     for row in values:
@@ -633,6 +667,14 @@ def convert_source_rows_for_sheets(
                     new_row.append(converted_date)
                 else:
                     new_row.append(normalize_numeric_string(cell))
+
+            elif idx in boolean_column_indexes_set:
+                converted_boolean = convert_display_boolean(cell)
+                if converted_boolean != cell:
+                    new_row.append(converted_boolean)
+                else:
+                    new_row.append(normalize_numeric_string(cell))
+
             else:
                 new_row.append(normalize_numeric_string(cell))
 
@@ -831,16 +873,15 @@ def sort_planejamento_by_column_a(
     total_written_rows: int,
     last_column_letter: str = "BW"
 ):
-    # total_written_rows inclui a linha de cabeçalho
     if total_written_rows <= 1:
         print("Não há linhas de dados suficientes para ordenar.")
         return
 
     sheet_id = get_sheet_id(sheets_service, spreadsheet_id, sheet_name)
 
-    data_start_row_index = header_row  # linha 4 em índice 0-based
-    data_end_row_index = header_row + total_written_rows - 1  # exclusivo
-    end_column_index = column_letter_to_number(last_column_letter)  # exclusivo
+    data_start_row_index = header_row
+    data_end_row_index = header_row + total_written_rows - 1
+    end_column_index = column_letter_to_number(last_column_letter)
 
     execute_with_retries(
         sheets_service.spreadsheets().batchUpdate(
@@ -853,12 +894,12 @@ def sort_planejamento_by_column_a(
                                 "sheetId": sheet_id,
                                 "startRowIndex": data_start_row_index,
                                 "endRowIndex": data_end_row_index,
-                                "startColumnIndex": 0,              # A
-                                "endColumnIndex": end_column_index  # BW
+                                "startColumnIndex": 0,
+                                "endColumnIndex": end_column_index
                             },
                             "sortSpecs": [
                                 {
-                                    "dimensionIndex": 0,             # coluna A
+                                    "dimensionIndex": 0,
                                     "sortOrder": "ASCENDING"
                                 }
                             ]
@@ -1082,7 +1123,7 @@ def main():
                         spreadsheet_id=DEST_SPREADSHEET_ID,
                         sheet_name=DEST_SHEET_NAME,
                         date_columns=[0],
-                        start_row=CSV_START_ROW + 1,  # pula cabeçalho
+                        start_row=CSV_START_ROW + 1,
                         start_col=CSV_START_COL,
                         num_rows=csv_rows_written - 1
                     )
@@ -1127,6 +1168,12 @@ def main():
         )
         print(f"Colunas de data das planilhas de origem: {source_date_column_indexes}")
 
+        source_boolean_column_indexes = get_relative_column_indexes_for_range(
+            SOURCE_BOOLEAN_COLUMNS_LETTERS,
+            SOURCE_RANGE_A1
+        )
+        print(f"Colunas booleanas das planilhas de origem: {source_boolean_column_indexes}")
+
         print("Detectando colunas de porcentagem das planilhas de origem...")
         source_percentage_columns = detect_percentage_columns(
             source_raw_rows,
@@ -1138,7 +1185,8 @@ def main():
         print("Convertendo valores das planilhas de origem...")
         prepared_source_rows = convert_source_rows_for_sheets(
             source_raw_rows,
-            date_column_indexes=source_date_column_indexes
+            date_column_indexes=source_date_column_indexes,
+            boolean_column_indexes=source_boolean_column_indexes
         )
 
         print("Removendo linhas totalmente em branco das planilhas de origem...")
