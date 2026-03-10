@@ -51,6 +51,9 @@ SOURCE_DATE_COLUMNS_LETTERS = ["B", "BR", "BS", "BT"]
 # Colunas da origem que devem virar boolean real
 SOURCE_BOOLEAN_COLUMNS_LETTERS = ["Q"]
 
+# Colunas dos CSVs que devem virar boolean real
+CSV_BOOLEAN_COLUMNS_LETTERS = ["P"]
+
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -624,7 +627,11 @@ def convert_display_boolean(value: Any):
     return value
 
 
-def convert_csv_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
+def convert_csv_rows_for_sheets(
+    values: List[List[Any]],
+    boolean_column_indexes: List[int]
+) -> List[List[Any]]:
+    boolean_column_indexes_set = set(boolean_column_indexes)
     converted = []
 
     for row_idx, row in enumerate(values):
@@ -637,6 +644,14 @@ def convert_csv_rows_for_sheets(values: List[List[Any]]) -> List[List[Any]]:
                     new_row.append(converted_date)
                 else:
                     new_row.append(normalize_numeric_string(cell))
+
+            elif row_idx > 0 and col_idx in boolean_column_indexes_set:
+                converted_boolean = convert_display_boolean(cell)
+                if converted_boolean != cell:
+                    new_row.append(converted_boolean)
+                else:
+                    new_row.append(normalize_numeric_string(cell))
+
             else:
                 if row_idx == 0:
                     new_row.append(cell)
@@ -1096,8 +1111,17 @@ def main():
             )
             print(f"Colunas de porcentagem dos CSVs: {csv_percentage_columns}")
 
+            csv_boolean_column_indexes = [
+                column_letter_to_number(col_letter) - 1
+                for col_letter in CSV_BOOLEAN_COLUMNS_LETTERS
+            ]
+            print(f"Colunas booleanas dos CSVs: {csv_boolean_column_indexes}")
+
             print("Convertendo valores dos CSVs...")
-            prepared_csv_data = convert_csv_rows_for_sheets(merged_csv_data)
+            prepared_csv_data = convert_csv_rows_for_sheets(
+                merged_csv_data,
+                boolean_column_indexes=csv_boolean_column_indexes
+            )
 
             print("Removendo linhas totalmente em branco dos CSVs...")
             prepared_csv_data = remove_fully_blank_rows(prepared_csv_data)
