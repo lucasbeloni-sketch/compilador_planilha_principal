@@ -823,6 +823,54 @@ def apply_date_format(
         )
 
 
+def sort_planejamento_by_column_a(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    header_row: int,
+    total_written_rows: int,
+    last_column_letter: str = "BW"
+):
+    # total_written_rows inclui a linha de cabeçalho
+    if total_written_rows <= 1:
+        print("Não há linhas de dados suficientes para ordenar.")
+        return
+
+    sheet_id = get_sheet_id(sheets_service, spreadsheet_id, sheet_name)
+
+    data_start_row_index = header_row  # linha 4 em índice 0-based
+    data_end_row_index = header_row + total_written_rows - 1  # exclusivo
+    end_column_index = column_letter_to_number(last_column_letter)  # exclusivo
+
+    execute_with_retries(
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "sortRange": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": data_start_row_index,
+                                "endRowIndex": data_end_row_index,
+                                "startColumnIndex": 0,              # A
+                                "endColumnIndex": end_column_index  # BW
+                            },
+                            "sortSpecs": [
+                                {
+                                    "dimensionIndex": 0,             # coluna A
+                                    "sortOrder": "ASCENDING"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ),
+        description=f"ordenação de {sheet_name}!A4:{last_column_letter} pela coluna A"
+    )
+
+
 # =========================
 # GOOGLE SHEETS - ESCRITA
 # =========================
@@ -1060,6 +1108,7 @@ def main():
     #    CONSIDERANDO APENAS LINHAS ONDE A COLUNA B DA ORIGEM TENHA VALOR
     # -------------------------------------------------
     append_start_row = CSV_START_ROW + csv_rows_written
+    source_rows_written = 0
 
     print("Coletando dados das planilhas de origem...")
     source_raw_rows = collect_source_sheets_data(
@@ -1111,6 +1160,8 @@ def main():
                 values=prepared_source_rows
             )
 
+            source_rows_written = len(prepared_source_rows)
+
             print("Aplicando formatação de data nas colunas das planilhas de origem...")
             apply_date_format(
                 sheets_service=sheets_service,
@@ -1136,6 +1187,18 @@ def main():
             print("Nenhuma linha útil restou nas planilhas de origem após limpeza.")
     else:
         print("Nenhum dado encontrado nas planilhas de origem.")
+
+    total_written_rows = csv_rows_written + source_rows_written
+
+    print("Ordenando intervalo A4:BW pela coluna A...")
+    sort_planejamento_by_column_a(
+        sheets_service=sheets_service,
+        spreadsheet_id=DEST_SPREADSHEET_ID,
+        sheet_name=DEST_SHEET_NAME,
+        header_row=CSV_START_ROW,
+        total_written_rows=total_written_rows,
+        last_column_letter="BW"
+    )
 
     print("Gravando timestamp em C2...")
     write_timestamp_to_c2(
