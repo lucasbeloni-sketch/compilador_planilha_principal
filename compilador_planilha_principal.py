@@ -596,6 +596,12 @@ def main():
     print("Aplicando formatações de coluna...")
     all_rows = apply_column_formats(all_rows)
 
+    print("Ordenando por coluna A (A-Z)...")
+    if len(all_rows) > 1:
+        header = all_rows[0]
+        data = sorted(all_rows[1:], key=lambda row: str(row[0]).strip().lower() if row else "")
+        all_rows = [header] + data
+
     print(f"Total de linhas a salvar: {len(all_rows)}")
     print(f"Fazendo upload de '{DEST_CSV_NAME}' para a pasta {DEST_FOLDER_ID}...")
     upload_csv_to_drive(
