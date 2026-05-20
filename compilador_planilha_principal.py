@@ -8,7 +8,6 @@ import re
 import time
 import socket
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import List, Dict, Any
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -40,11 +39,6 @@ SOURCE_SPREADSHEET_IDS = [
 ]
 SOURCE_SHEET_NAME = "Plan_Principal"
 SOURCE_RANGE_A1 = "B5:BX"
-
-# Índices (base 0) das colunas que precisam de formatação especial
-FORMAT_DATE_COLUMNS = [column_letter_to_number("A") - 1 if False else 0]  # col A = 0
-FORMAT_NUMBER_COLUMNS = []  # preenchido após definir column_letter_to_number
-FORMAT_DURATION_COLUMNS = []  # preenchido após definir column_letter_to_number
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -142,10 +136,9 @@ def pad_rows_to_width(values: List[List[Any]], width: int) -> List[List[Any]]:
 
 # =========================
 # ÍNDICES DE FORMATAÇÃO
-# (definidos após column_letter_to_number estar disponível)
 # =========================
 FORMAT_DATE_COLUMNS = [
-    column_letter_to_number("A") - 1,       # 0
+    column_letter_to_number("A") - 1,
 ]
 FORMAT_NUMBER_COLUMNS = [
     column_letter_to_number(c) - 1
@@ -597,10 +590,15 @@ def main():
     all_rows = apply_column_formats(all_rows)
 
     print("Ordenando por coluna A (A-Z)...")
-    if len(all_rows) > 1:
-        header = all_rows[0]
-        data = sorted(all_rows[1:], key=lambda row: str(row[0]).strip().lower() if row else "")
-        all_rows = [header] + data
+    if all_rows:
+        def sort_key(row):
+            val = str(row[0]).strip() if row else ""
+            try:
+                return (0, datetime.strptime(val, "%d/%m/%Y"), "")
+            except ValueError:
+                return (1, datetime.min, val.lower())
+
+        all_rows = sorted(all_rows, key=sort_key)
 
     print(f"Total de linhas a salvar: {len(all_rows)}")
     print(f"Fazendo upload de '{DEST_CSV_NAME}' para a pasta {DEST_FOLDER_ID}...")
