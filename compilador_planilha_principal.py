@@ -295,6 +295,18 @@ def find_existing_file_in_folder(drive_service, folder_id: str, filename: str) -
     files = response.get("files", [])
     return files[0]["id"] if files else None
 
+def get_first_csv_row_raw(existing_content: str) -> str:
+    """Extrai a primeira linha do CSV respeitando campos com quebras de linha entre aspas."""
+    reader = csv.reader(io.StringIO(existing_content, newline=""), delimiter=";")
+    try:
+        first_row = next(reader)
+    except StopIteration:
+        return ""
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";", lineterminator="\n")
+    writer.writerow(first_row)
+    return buf.getvalue().rstrip("\n")
+
 def upload_csv_to_drive(
     drive_service,
     folder_id: str,
@@ -308,7 +320,7 @@ def upload_csv_to_drive(
     if existing_id:
         print(f"Arquivo '{filename}' encontrado. Preservando linha 1...")
         existing_content = download_csv_content(drive_service, existing_id)
-        first_line = existing_content.split("\n")[0]
+        first_line = get_first_csv_row_raw(existing_content)
 
     buffer = io.StringIO()
     if first_line:
