@@ -327,7 +327,6 @@ def upload_csv_to_drive(
 ):
     existing_id = find_existing_file_in_folder(drive_service, folder_id, filename)
 
-    # Preserva a linha 1 do arquivo existente, se houver
     first_line = ""
     if existing_id:
         print(f"Arquivo '{filename}' encontrado. Preservando linha 1...")
@@ -521,6 +520,17 @@ def apply_column_formats(rows: List[List[Any]]) -> List[List[Any]]:
         result.append(new_row)
     return result
 
+def remove_duplicate_rows(rows: List[List[Any]]) -> List[List[Any]]:
+    """Remove linhas duplicadas mantendo a primeira ocorrência."""
+    seen = set()
+    result = []
+    for row in rows:
+        key = tuple(str(cell) for cell in row)
+        if key not in seen:
+            seen.add(key)
+            result.append(row)
+    return result
+
 
 # =========================
 # MAIN
@@ -588,6 +598,11 @@ def main():
 
     print("Aplicando formatações de coluna...")
     all_rows = apply_column_formats(all_rows)
+
+    print("Removendo linhas duplicadas...")
+    before = len(all_rows)
+    all_rows = remove_duplicate_rows(all_rows)
+    print(f"Linhas removidas por duplicidade: {before - len(all_rows)}")
 
     print("Ordenando por coluna A (A-Z)...")
     if all_rows:
