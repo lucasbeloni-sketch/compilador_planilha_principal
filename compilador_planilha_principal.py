@@ -155,8 +155,10 @@ def normalize_numeric_string(value: Any):
         return value
     original = value
     s = value.strip().replace("\u00A0", " ")
-    if s == "" or s.startswith("'"):
-        return s[1:].strip() if s.startswith("'") else s
+    if s == "":
+        return ""
+    if s.startswith("'"):
+        s = s[1:].strip()
     is_percent = s.endswith("%")
     if is_percent:
         s = s[:-1].strip()
@@ -193,9 +195,7 @@ def normalize_numeric_string(value: Any):
             s = s.replace(".", "")
         elif s.count(".") == 1:
             left, right = s.split(".")
-            if right.isdigit() and 1 <= len(right) <= 6:
-                pass  # já está no formato correto
-            else:
+            if not (right.isdigit() and 1 <= len(right) <= 6):
                 return original
         else:
             return original
@@ -301,19 +301,31 @@ def upload_csv_to_drive(
     filename: str,
     rows: List[List[Any]]
 ):
+    existing_id = find_existing_file_in_folder(drive_service, folder_id, filename)
+
+    # Preserva a linha 1 do arquivo existente, se houver
+    first_line = ""
+    if existing_id:
+        print(f"Arquivo '{filename}' encontrado. Preservando linha 1...")
+        existing_content = download_csv_content(drive_service, existing_id)
+        first_line = existing_content.split("\n")[0]
+
     buffer = io.StringIO()
+    if first_line:
+        buffer.write(first_line + "\n")
     writer = csv.writer(buffer, delimiter=";", lineterminator="\n")
     for row in rows:
         writer.writerow([str(cell) if cell is not None else "" for cell in row])
-    csv_bytes = buffer.getvalue().encode("utf-8-sig")  # BOM para compatibilidade com Excel
+
+    csv_bytes = buffer.getvalue().encode("utf-8-sig")
     media = MediaIoBaseUpload(
         io.BytesIO(csv_bytes),
         mimetype="text/csv",
         resumable=True
     )
-    existing_id = find_existing_file_in_folder(drive_service, folder_id, filename)
+
     if existing_id:
-        print(f"Arquivo '{filename}' já existe (ID: {existing_id}). Substituindo...")
+        print(f"Substituindo conteúdo de '{filename}' a partir da linha 2...")
         execute_with_retries(
             drive_service.files().update(
                 fileId=existing_id,
@@ -322,7 +334,6 @@ def upload_csv_to_drive(
             ),
             description=f"atualização do arquivo '{filename}'"
         )
-        print(f"Arquivo '{filename}' atualizado com sucesso.")
     else:
         print(f"Criando novo arquivo '{filename}' na pasta {folder_id}...")
         file_metadata = {
@@ -339,7 +350,7 @@ def upload_csv_to_drive(
             ),
             description=f"criação do arquivo '{filename}'"
         )
-        print(f"Arquivo '{filename}' criado com sucesso.")
+    print(f"Arquivo '{filename}' salvo com sucesso.")
 
 
 # =========================
