@@ -41,6 +41,11 @@ SOURCE_SPREADSHEET_IDS = [
 SOURCE_SHEET_NAME = "Plan_Principal"
 SOURCE_RANGE_A1 = "B5:BX"
 
+# Índices (base 0) das colunas que precisam de formatação especial
+FORMAT_DATE_COLUMNS = [column_letter_to_number("A") - 1 if False else 0]  # col A = 0
+FORMAT_NUMBER_COLUMNS = []  # preenchido após definir column_letter_to_number
+FORMAT_DURATION_COLUMNS = []  # preenchido após definir column_letter_to_number
+
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -133,6 +138,23 @@ def pad_rows_to_width(values: List[List[Any]], width: int) -> List[List[Any]]:
         (list(row) + [""] * (width - len(row)))[:width]
         for row in values
     ]
+
+
+# =========================
+# ÍNDICES DE FORMATAÇÃO
+# (definidos após column_letter_to_number estar disponível)
+# =========================
+FORMAT_DATE_COLUMNS = [
+    column_letter_to_number("A") - 1,       # 0
+]
+FORMAT_NUMBER_COLUMNS = [
+    column_letter_to_number(c) - 1
+    for c in ["AK", "AL", "AN", "AP", "BP"]
+]
+FORMAT_DURATION_COLUMNS = [
+    column_letter_to_number(c) - 1
+    for c in ["BK", "BL", "BM", "BN", "BO"]
+]
 
 
 # =========================
@@ -279,10 +301,7 @@ def download_csv_content(drive_service, file_id: str) -> str:
 # GOOGLE DRIVE - UPLOAD
 # =========================
 def find_existing_file_in_folder(drive_service, folder_id: str, filename: str) -> str | None:
-    query = (
-        f"'{folder_id}' in parents and trashed = false "
-        f"and name = '{filename}'"
-    )
+    query = f"'{folder_id}' in parents and trashed = false and name = '{filename}'"
     response = execute_with_retries(
         drive_service.files().list(
             q=query,
@@ -330,11 +349,7 @@ def upload_csv_to_drive(
         writer.writerow([str(cell) if cell is not None else "" for cell in row])
 
     csv_bytes = buffer.getvalue().encode("utf-8-sig")
-    media = MediaIoBaseUpload(
-        io.BytesIO(csv_bytes),
-        mimetype="text/csv",
-        resumable=True
-    )
+    media = MediaIoBaseUpload(io.BytesIO(csv_bytes), mimetype="text/csv", resumable=True)
 
     if existing_id:
         print(f"Substituindo conteúdo de '{filename}' a partir da linha 2...")
@@ -465,7 +480,7 @@ def collect_source_sheets_data(
 
 
 # =========================
-# NORMALIZAÇÃO DE DADOS
+# NORMALIZAÇÃO E FORMATAÇÃO
 # =========================
 def normalize_rows(values: List[List[Any]], skip_first_row: bool = False) -> List[List[Any]]:
     result = []
@@ -474,6 +489,43 @@ def normalize_rows(values: List[List[Any]], skip_first_row: bool = False) -> Lis
             result.append(row)
         else:
             result.append([normalize_numeric_string(cell) for cell in row])
+    return result
+
+def format_date_value(value: Any) -> Any:
+    """Extrai apenas dd/mm/yyyy de strings como '30/06/2026 - terça-feira'."""
+    if not isinstance(value, str):
+        return value
+    match = re.match(r"(\d{2}/\d{2}/\d{4})", value.strip())
+    return match.group(1) if match else value
+
+def format_number_value(value: Any) -> Any:
+    """Converte decimal com ponto para vírgula (padrão brasileiro)."""
+    if isinstance(value, float):
+        return str(value).replace(".", ",")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if re.fullmatch(r"-?\d+\.\d+", s):
+            return s.replace(".", ",")
+    return value
+
+def apply_column_formats(rows: List[List[Any]]) -> List[List[Any]]:
+    """Aplica formatações específicas por coluna, ignorando o cabeçalho (linha 0)."""
+    result = []
+    for row_idx, row in enumerate(rows):
+        if row_idx == 0:
+            result.append(row)
+            continue
+        new_row = list(row)
+        for col_idx in FORMAT_DATE_COLUMNS:
+            if col_idx < len(new_row):
+                new_row[col_idx] = format_date_value(new_row[col_idx])
+        for col_idx in FORMAT_NUMBER_COLUMNS:
+            if col_idx < len(new_row):
+                new_row[col_idx] = format_number_value(new_row[col_idx])
+        # Colunas de duração (BK–BO) chegam como "HH:MM:SS" do Sheets — sem transformação
+        result.append(new_row)
     return result
 
 
@@ -540,6 +592,9 @@ def main():
     if not all_rows:
         print("Nenhum dado para salvar. Encerrando.")
         return
+
+    print("Aplicando formatações de coluna...")
+    all_rows = apply_column_formats(all_rows)
 
     print(f"Total de linhas a salvar: {len(all_rows)}")
     print(f"Fazendo upload de '{DEST_CSV_NAME}' para a pasta {DEST_FOLDER_ID}...")
