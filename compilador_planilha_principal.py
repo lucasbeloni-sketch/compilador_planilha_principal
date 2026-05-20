@@ -302,7 +302,7 @@ def upload_csv_to_drive(
     rows: List[List[Any]]
 ):
     buffer = io.StringIO()
-    writer = csv.writer(buffer, lineterminator="\n")
+    writer = csv.writer(buffer, delimiter=";", lineterminator="\n")
     for row in rows:
         writer.writerow([str(cell) if cell is not None else "" for cell in row])
     csv_bytes = buffer.getvalue().encode("utf-8-sig")  # BOM para compatibilidade com Excel
