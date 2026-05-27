@@ -1,8 +1,6 @@
 name: Executar compilador
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */3 * * *"
 jobs:
   run-script:
     runs-on: ubuntu-latest
